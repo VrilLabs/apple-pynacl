@@ -4,11 +4,11 @@ Custom-built PyNaCl 1.6.2 wheels for macOS and iOS, linked against a custom-comp
 
 ## Available wheels
 
-| Wheel | Target | Python | Extension | Use case |
-|-------|--------|--------|-----------|----------|
-| `pynacl-1.6.2-cp314-cp314-macosx_26_0_x86_64.whl` | macOS x86_64 | 3.14 | `_sodium.abi3.so` | Intel Macs |
-| `pynacl-1.6.2-cp313-cp313-ios_arm64.whl` | iOS arm64 (generic) | 3.13 | `_sodium.abi3.so` | Intermediate build — may not install on all iOS Python distributions |
-| `pynacl-1.6.2-cp313-cp313-ios_14_arm64_iphoneos.whl` | iOS arm64 (a-Shell) | 3.13 | `_sodium.cpython-313-iphoneos.so` | **Recommended for a-Shell on iPad/iPhone** |
+| Wheel                                                | Target              | Python | Extension                         | Use case                                                             |
+| ---------------------------------------------------- | ------------------- | ------ | --------------------------------- | -------------------------------------------------------------------- |
+| `pynacl-1.6.2-cp314-cp314-macosx_26_0_x86_64.whl`    | macOS x86_64        | 3.14   | `_sodium.abi3.so`                 | Intel Macs                                                           |
+| `pynacl-1.6.2-cp313-cp313-ios_arm64.whl`             | iOS arm64 (generic) | 3.13   | `_sodium.abi3.so`                 | Intermediate build — may not install on all iOS Python distributions |
+| `pynacl-1.6.2-cp313-cp313-ios_14_arm64_iphoneos.whl` | iOS arm64 (a-Shell) | 3.13   | `_sodium.cpython-313-iphoneos.so` | **Recommended for a-Shell on iPad/iPhone**                           |
 
 > **Which iOS wheel?** Use the `ios_14_arm64_iphoneos` wheel for a-Shell. The `ios_arm64` wheel uses a generic platform tag and `.abi3.so` suffix that a-Shell's pip does not recognize. The `iphoneos` wheel matches a-Shell's `sysconfig.get_platform()` (`ios-14-arm64-iphoneos`) and `EXT_SUFFIX` (`.cpython-313-iphoneos.so`).
 
@@ -200,6 +200,20 @@ mkdir -p $(python3 -c "import site; print(site.getusersitepackages())")
 unzip pynacl-1.6.2-cp313-cp313-ios_14_arm64_iphoneos.whl -d $(python3 -c "import site; print(site.getusersitepackages())")
 ```
 
+### `ImportError: ... completely unsigned? Code has to be at least ad-hoc signed.`
+
+The `.so` file in the wheel lacks a code signature. iOS enforces code signing on all dynamically loaded libraries. The wheels in this repo are already ad-hoc signed during the build process. If you rebuild from source, make sure to run:
+
+```sh
+codesign -s - nacl/_sodium.cpython-313-iphoneos.so
+```
+
+before packaging the wheel. You can also sign an already-installed `.so` on-device (if `codesign` is available):
+
+```sh
+codesign -s - $(python3 -c "import nacl._sodium as m; print(m.__file__)")
+```
+
 ## Building from source
 
 These instructions reproduce the wheels in `dist/`. You need a macOS host with Xcode and Homebrew Python.
@@ -234,6 +248,7 @@ chmod +x build_pynacl_ios.sh
 ```
 
 This script:
+
 1. Downloads PyNaCl source
 2. Creates a Python 3.13 venv with cffi
 3. Cross-compiles the `_sodium` extension against the custom libsodium
@@ -258,38 +273,41 @@ Output: `dist/pynacl-1.6.2-cp314-cp314-macosx_26_0_x86_64.whl`
 
 For manual builds or customization, these are the critical environment variables:
 
-| Variable | Value | Purpose |
-|----------|-------|---------|
-| `CC` | `$(xcrun --sdk iphoneos --find clang)` | iOS SDK compiler |
-| `SDKROOT` | `$(xcrun --sdk iphoneos --show-sdk-path)` | iPhoneOS SDK path |
-| `CFLAGS` | `-arch arm64 -isysroot $SDKROOT -miphoneos-version-min=14.0` | iOS target flags |
-| `LDFLAGS` | `-arch arm64 -isysroot $SDKROOT -miphoneos-version-min=14.0` | iOS linker flags |
-| `_PYTHON_HOST_PLATFORM` | `ios-arm64` | Controls wheel platform tag |
-| `SODIUM_INSTALL` | `system` | Use external libsodium (not bundled) |
-| `SODIUMINCL` | `-I$PWD/build/libsodium/include` | Custom libsodium headers |
-| `SODIUMLIB` | `-L$PWD/build/libsodium/lib` | Custom libsodium library |
+| Variable                | Value                                                        | Purpose                              |
+| ----------------------- | ------------------------------------------------------------ | ------------------------------------ |
+| `CC`                    | `$(xcrun --sdk iphoneos --find clang)`                       | iOS SDK compiler                     |
+| `SDKROOT`               | `$(xcrun --sdk iphoneos --show-sdk-path)`                    | iPhoneOS SDK path                    |
+| `CFLAGS`                | `-arch arm64 -isysroot $SDKROOT -miphoneos-version-min=14.0` | iOS target flags                     |
+| `LDFLAGS`               | `-arch arm64 -isysroot $SDKROOT -miphoneos-version-min=14.0` | iOS linker flags                     |
+| `_PYTHON_HOST_PLATFORM` | `ios-arm64`                                                  | Controls wheel platform tag          |
+| `SODIUM_INSTALL`        | `system`                                                     | Use external libsodium (not bundled) |
+| `SODIUMINCL`            | `-I$PWD/build/libsodium/include`                             | Custom libsodium headers             |
+| `SODIUMLIB`             | `-L$PWD/build/libsodium/lib`                                 | Custom libsodium library             |
 
 ### Why the repackaging step for a-Shell?
 
 Standard `setuptools` produces wheels with `.abi3.so` extensions and a generic `ios_arm64` platform tag. a-Shell's Python expects:
+
 - Extension suffix: `.cpython-313-iphoneos.so` (from `sysconfig.get_config_var('EXT_SUFFIX')`)
 - Platform tag: `ios_14_arm64_iphoneos` (from `sysconfig.get_platform()` → `ios-14-arm64-iphoneos`)
 
 The build script repackages the wheel to match these expectations, renaming the extension file and updating the `WHEEL` and `RECORD` metadata.
 
+Additionally, the `.so` is **ad-hoc code signed** (`codesign -s -`) during repackaging. iOS requires at least ad-hoc signing for dynamically loaded libraries — without it, `dlopen()` rejects the file with `mapped file has no cdhash, completely unsigned?`.
+
 ## Build details
 
-| | macOS x86_64 | iOS arm64 (a-Shell) |
-|---|---|---|
-| **libsodium** | 1.0.19, host-built (bundled) | 1.0.19, cross-compiled (`--host=arm-apple-darwin`) |
-| **Compiler** | Homebrew clang | Xcode clang via `xcrun --sdk iphoneos` |
-| **Host Python** | 3.14 | 3.13.13 (Homebrew) |
-| **Platform tag** | `macosx_26_0_x86_64` | `ios_14_arm64_iphoneos` |
-| **Extension suffix** | `.abi3.so` | `.cpython-313-iphoneos.so` |
-| **Mach-O target** | x86_64 macOS | arm64 iPhoneOS 14.0+ |
-| **`_PYTHON_HOST_PLATFORM`** | _(default)_ | `ios-arm64` |
-| **iOS SDK** | — | `iPhoneOS26.5.sdk` |
-| **Min iOS version** | — | 14.0 |
+|                             | macOS x86_64                 | iOS arm64 (a-Shell)                                |
+| --------------------------- | ---------------------------- | -------------------------------------------------- |
+| **libsodium**               | 1.0.19, host-built (bundled) | 1.0.19, cross-compiled (`--host=arm-apple-darwin`) |
+| **Compiler**                | Homebrew clang               | Xcode clang via `xcrun --sdk iphoneos`             |
+| **Host Python**             | 3.14                         | 3.13.13 (Homebrew)                                 |
+| **Platform tag**            | `macosx_26_0_x86_64`         | `ios_14_arm64_iphoneos`                            |
+| **Extension suffix**        | `.abi3.so`                   | `.cpython-313-iphoneos.so`                         |
+| **Mach-O target**           | x86_64 macOS                 | arm64 iPhoneOS 14.0+                               |
+| **`_PYTHON_HOST_PLATFORM`** | _(default)_                  | `ios-arm64`                                        |
+| **iOS SDK**                 | —                            | `iPhoneOS26.5.sdk`                                 |
+| **Min iOS version**         | —                            | 14.0                                               |
 
 ## Acknowledgments
 
