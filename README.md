@@ -200,19 +200,15 @@ mkdir -p $(python3 -c "import site; print(site.getusersitepackages())")
 unzip pynacl-1.6.2-cp313-cp313-ios_14_arm64_iphoneos.whl -d $(python3 -c "import site; print(site.getusersitepackages())")
 ```
 
-### `ImportError: ... completely unsigned? Code has to be at least ad-hoc signed.`
+### `ImportError: ... completely unsigned?` or `code signature invalid`
 
-The `.so` file in the wheel lacks a code signature. iOS enforces code signing on all dynamically loaded libraries. The wheels in this repo are already ad-hoc signed during the build process. If you rebuild from source, make sure to run:
-
-```sh
-codesign -s - nacl/_sodium.cpython-313-iphoneos.so
-```
-
-before packaging the wheel. You can also sign an already-installed `.so` on-device (if `codesign` is available):
+iOS enforces code signing on all dynamically loaded libraries. The distributed wheels are already pseudo-signed with `ldid -S`. If you rebuild from source, make sure to sign the `.so` with `ldid` (not `codesign`):
 
 ```sh
-codesign -s - $(python3 -c "import nacl._sodium as m; print(m.__file__)")
+ldid -S nacl/_sodium.cpython-313-iphoneos.so
 ```
+
+before packaging the wheel. macOS's `codesign -s -` creates an adhoc signature that iOS rejects — `ldid -S` is required for iOS-compatible pseudo-signatures.
 
 ## Building from source
 
@@ -221,7 +217,7 @@ These instructions reproduce the wheels in `dist/`. You need a macOS host with X
 ### Prerequisites
 
 - macOS with Xcode (includes iPhoneOS SDK)
-- Homebrew: `brew install python@3.13 python@3.14`
+- Homebrew: `brew install python@3.13 python@3.14 ldid`
 - Command line tools: `xcode-select --install`
 
 ### Build libsodium for iOS
@@ -293,7 +289,7 @@ Standard `setuptools` produces wheels with `.abi3.so` extensions and a generic `
 
 The build script repackages the wheel to match these expectations, renaming the extension file and updating the `WHEEL` and `RECORD` metadata.
 
-Additionally, the `.so` is **ad-hoc code signed** (`codesign -s -`) during repackaging. iOS requires at least ad-hoc signing for dynamically loaded libraries — without it, `dlopen()` rejects the file with `mapped file has no cdhash, completely unsigned?`.
+Additionally, the `.so` is **pseudo-signed with `ldid -S`** during repackaging. iOS requires a code signature for dynamically loaded libraries — without it, `dlopen()` rejects the file. macOS's `codesign -s -` creates an adhoc signature that iOS rejects as "code signature invalid". `ldid -S` creates a minimal `LC_CODE_SIGNATURE` load command that iOS accepts. Install via `brew install ldid`.
 
 ## Build details
 

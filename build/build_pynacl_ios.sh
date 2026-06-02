@@ -73,10 +73,12 @@ if [ -n "$WHEEL_FILE" ]; then
         mv nacl/_sodium.abi3.so nacl/_sodium.cpython-313-iphoneos.so
     fi
 
-    # Ad-hoc code sign the extension — iOS requires at least ad-hoc signing
-    # for dynamically loaded libraries, otherwise dlopen() rejects with
-    # "mapped file has no cdhash, completely unsigned?"
-    codesign -s - nacl/_sodium.cpython-313-iphoneos.so
+    # Pseudo-sign the extension with ldid — iOS requires a code signature
+    # for dynamically loaded libraries. macOS codesign -s - creates an
+    # adhoc signature that iOS rejects ("code signature invalid").
+    # ldid -S creates a minimal LC_CODE_SIGNATURE that iOS accepts.
+    # Install ldid via: brew install ldid
+    ldid -S nacl/_sodium.cpython-313-iphoneos.so
 
     # Update WHEEL tag
     sed -i '' 's/Tag: cp313-cp313-ios_arm64/Tag: cp313-cp313-ios_14_arm64_iphoneos/' pynacl-*.dist-info/WHEEL
