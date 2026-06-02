@@ -202,13 +202,20 @@ unzip pynacl-1.6.2-cp313-cp313-ios_14_arm64_iphoneos.whl -d $(python3 -c "import
 
 ### `ImportError: ... completely unsigned?` or `code signature invalid`
 
-iOS enforces code signing on all dynamically loaded libraries. The distributed wheels are already pseudo-signed with `ldid -S`. If you rebuild from source, make sure to sign the `.so` with `ldid` (not `codesign`):
+iOS enforces mandatory code signature validation on all `dlopen()`'d libraries. The signature must chain to an Apple-trusted root certificate. Neither ad-hoc (`codesign -s -`) nor `ldid -S` pseudo-signatures are accepted on non-jailbroken iOS.
+
+**Solutions** (see `IOS_CODESIGN_GUIDE.md` for full details):
+
+1. **Sign with your Apple Developer identity** — requires building a custom a-Shell with `disable-library-validation` entitlement, or using your own iOS app that embeds Python
+2. **Jailbroken device** — `ldid -S` pseudo-signatures work when kernel enforcement is disabled
+3. **Use pure-Python fallback** — avoid native extensions entirely (not possible for PyNaCl)
+
+To sign with your developer identity on the build Mac:
 
 ```sh
-ldid -S nacl/_sodium.cpython-313-iphoneos.so
+codesign -s "Apple Development: your@email.com" --force --timestamp=none \
+    nacl/_sodium.cpython-313-iphoneos.so
 ```
-
-before packaging the wheel. macOS's `codesign -s -` creates an adhoc signature that iOS rejects — `ldid -S` is required for iOS-compatible pseudo-signatures.
 
 ## Building from source
 
@@ -289,7 +296,14 @@ Standard `setuptools` produces wheels with `.abi3.so` extensions and a generic `
 
 The build script repackages the wheel to match these expectations, renaming the extension file and updating the `WHEEL` and `RECORD` metadata.
 
-Additionally, the `.so` is **pseudo-signed with `ldid -S`** during repackaging. iOS requires a code signature for dynamically loaded libraries — without it, `dlopen()` rejects the file. macOS's `codesign -s -` creates an adhoc signature that iOS rejects as "code signature invalid". `ldid -S` creates a minimal `LC_CODE_SIGNATURE` load command that iOS accepts. Install via `brew install ldid`.
+Additionally, the `.so` must be **code-signed** during repackaging. iOS enforces mandatory code signature validation on all `dlopen()`'d libraries — the signature must chain to an Apple-trusted root certificate. Neither `codesign -s -` (adhoc) nor `ldid -S` (pseudo-signature) works on non-jailbroken iOS.
+
+The build script supports two modes:
+
+- **`CODESIGN_IDENTITY`** env var set → signs with your Apple Developer identity (required for non-jailbroken iOS)
+- **Fallback** → signs with `ldid -S` (only works on jailbroken devices)
+
+For full details on code signing requirements and solutions, see `IOS_CODESIGN_GUIDE.md`.
 
 ## Build details
 

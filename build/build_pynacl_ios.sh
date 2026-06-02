@@ -73,12 +73,25 @@ if [ -n "$WHEEL_FILE" ]; then
         mv nacl/_sodium.abi3.so nacl/_sodium.cpython-313-iphoneos.so
     fi
 
-    # Pseudo-sign the extension with ldid — iOS requires a code signature
-    # for dynamically loaded libraries. macOS codesign -s - creates an
-    # adhoc signature that iOS rejects ("code signature invalid").
-    # ldid -S creates a minimal LC_CODE_SIGNATURE that iOS accepts.
-    # Install ldid via: brew install ldid
-    ldid -S nacl/_sodium.cpython-313-iphoneos.so
+    # Code-sign the extension — iOS requires a valid Apple-trusted signature
+    # for dlopen()'d libraries. Neither ad-hoc (codesign -s -) nor ldid
+    # pseudo-signatures are accepted on non-jailbroken iOS.
+    #
+    # If you have an Apple Developer signing identity installed:
+    #   codesign -s "Apple Development: your@email.com" --force --timestamp=none \
+    #       nacl/_sodium.cpython-313-iphoneos.so
+    #
+    # For jailbroken devices, ldid -S works:
+    #   ldid -S nacl/_sodium.cpython-313-iphoneos.so
+    #
+    # For full details, see IOS_CODESIGN_GUIDE.md
+    if [ -n "$CODESIGN_IDENTITY" ]; then
+        codesign -s "$CODESIGN_IDENTITY" --force --timestamp=none \
+            nacl/_sodium.cpython-313-iphoneos.so
+    else
+        echo "WARNING: No CODESIGN_IDENTITY set. Signing with ldid (jailbreak only)."
+        ldid -S nacl/_sodium.cpython-313-iphoneos.so
+    fi
 
     # Update WHEEL tag
     sed -i '' 's/Tag: cp313-cp313-ios_arm64/Tag: cp313-cp313-ios_14_arm64_iphoneos/' pynacl-*.dist-info/WHEEL
