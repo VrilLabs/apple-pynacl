@@ -325,3 +325,9 @@ For full details on code signing requirements and solutions, see `IOS_CODESIGN_G
 - [PyNaCl](https://github.com/pyca/pynacl) — upstream Python binding (Apache-2.0)
 - [libsodium](https://github.com/jedisct1/libsodium) — NaCl cryptographic library (ISC License)
 - [a-Shell](https://github.com/holzschu/a-Shell) — iOS POSIX terminal with Python
+
+## Trademarks
+
+Apple, iOS, iPadOS, iPhone, Xcode, and the Apple logo are trademarks of Apple Inc.
+This project is an independent community project and has not been authorized, sponsored,
+or otherwise approved by Apple Inc.
