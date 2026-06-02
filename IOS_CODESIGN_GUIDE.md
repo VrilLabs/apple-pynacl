@@ -2,26 +2,53 @@
 
 ## The Problem
 
-On non-jailbroken iOS, `dlopen()` enforces **mandatory code signature validation** for all
-loaded Mach-O images. The signature must:
+On non-jailbroken iOS, `dlopen()` enforces **mandatory code signature validation** at the
+kernel level (via AMFI — Apple Mobile File Integrity). Unlike macOS, iOS has **no opt-out**
+for library validation. The requirements are:
 
-1. **Chain to an Apple-trusted root certificate** (i.e., be signed with an Apple Developer
-   signing identity — not ad-hoc, not `ldid` pseudo-signature)
-2. **Match the app's team** unless the app has the `disable-library-validation` entitlement
+1. **The library must be packaged as a framework** (`.framework` bundle) — iOS does not
+   support loading "naked" `.dylib` or `.so` files via `dlopen()` (Apple DTS, thread 670761)
+2. **The framework must be signed with a valid Apple-trusted certificate** that chains to
+   Apple Root CA — neither ad-hoc (`codesign -s -`) nor `ldid -S` pseudo-signatures are accepted
+3. **The framework must be signed by the same Team ID as the host app** — iOS enforces
+   this at the kernel level with no entitlement-based opt-out
 
-a-Shell (App Store version, signed by team **AsheKube**) does **NOT** include the
-`com.apple.security.cs.disable-library-validation` entitlement. This means:
+### Why `disable-library-validation` doesn't help on iOS
 
-- `codesign -s -` (macOS ad-hoc) → ❌ rejected: "completely unsigned" or "code signature invalid"
-- `ldid -S` (pseudo-signature) → ❌ rejected: "code signature invalid"
-- Signed with **your** developer cert → ❌ rejected: different team than a-Shell
-- Signed with **AsheKube's** cert → ✅ but you don't have their private key
+The `com.apple.security.cs.disable-library-validation` entitlement is a **macOS-only**
+feature (macOS 10.7+). It is part of the **Hardened Runtime**, which is a macOS security
+mechanism. iOS does not have the Hardened Runtime — it uses a different, stricter code
+signing enforcement via the kernel (AMFI). There is no iOS entitlement that allows loading
+libraries signed by a different team.
 
-**Bottom line**: On a non-jailbroken device with the stock App Store a-Shell, it is
-**impossible** to load a custom native `.so` extension via `dlopen()`. This is an iOS
-security enforcement, not a build issue.
+> Source: [Apple Developer Documentation — Disable Library Validation Entitlement](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.security.cs.disable-library-validation)
+> "A Boolean value that indicates whether the app loads arbitrary plug-ins or frameworks,
+> without requiring code signing. **macOS 10.7+**"
 
-This is confirmed by a-Shell's own documentation:
+### Why previous signing attempts failed
+
+| Signing method                  | Signature type   | iOS verdict              | Reason                                |
+| ------------------------------- | ---------------- | ------------------------ | ------------------------------------- |
+| None                            | Unsigned         | "completely unsigned"    | No `LC_CODE_SIGNATURE` load command   |
+| `codesign -s -`                 | Adhoc (macOS)    | "code signature invalid" | Adhoc doesn't chain to Apple Root CA  |
+| `ldid -S`                       | Pseudo-signature | "code signature invalid" | No Apple-trusted certificate chain    |
+| Apple Dev cert (same team)      | Valid CA-chained | ✅ passes                | Chains to Apple Root CA, same Team ID |
+| Apple Dev cert (different team) | Valid CA-chained | ❌ rejected              | Different Team ID, no opt-out on iOS  |
+
+### Why a-Shell can't load custom `.so` files
+
+a-Shell (App Store version, team **AsheKube**) loads its own Python extensions because
+they are:
+
+1. Packaged as **frameworks** inside the app bundle
+2. Signed with the **same team** (AsheKube) during the Xcode build
+
+When you `pip install` a package with a native `.so` extension, the `.so` is placed in
+`site-packages` as a naked shared library — not in a framework, and not signed by
+AsheKube. iOS rejects it at `dlopen()` time.
+
+a-Shell's own documentation confirms this limitation:
+
 > "For Python, you can install more packages with pip install packagename, but only if
 > they are pure Python. The C compiler is not yet able to produce dynamic libraries that
 > could be used by Python."
@@ -30,15 +57,20 @@ This is confirmed by a-Shell's own documentation:
 
 ## Solutions
 
-There are **three viable paths** to get native extensions working on iOS, in order of
-practicality:
+There are **three viable paths**, in order of practicality:
 
 ---
 
-### Option A: Build a Custom a-Shell with `disable-library-validation` (Recommended)
+### Option A: Build a Custom a-Shell Signed with Your Team (Recommended)
 
-This is the most practical solution. You build a-Shell from source with your own
-signing identity and add the entitlement that allows loading third-party libraries.
+Since iOS requires the framework to be signed by the **same team** as the host app, the
+solution is to build a-Shell from source using **your** Apple Developer signing identity.
+Then sign the PyNaCl framework with the **same** identity. Both will have the same Team ID,
+and iOS will allow the load.
+
+> **Note**: Adding `disable-library-validation` to the entitlements is **not necessary**
+> and **does not work on iOS**. The key is simply that both the app and the framework are
+> signed by the same team.
 
 #### Prerequisites
 
@@ -58,6 +90,7 @@ security find-identity -v -p codesigning
 ```
 
 If no identities are found, install them from Xcode:
+
 1. Open Xcode → Settings → Accounts
 2. Add your Apple ID
 3. Select your team → Manage Certificates → add signing certificate
@@ -73,20 +106,18 @@ git submodule update --init --recursive
 ./downloadFrameworks.sh
 ```
 
-#### Step 3: Add the entitlement
+#### Step 3: Add the `allow-unsigned-executable-memory` entitlement
 
-Edit `a-Shell/a-Shell.entitlements` and add these two entitlements inside the
-top-level `<dict>`:
+Edit `a-Shell/a-Shell.entitlements` and add this entitlement inside the top-level `<dict>`
+(this IS valid on iOS and is needed for FFI/JIT-style code):
 
 ```xml
-<!-- Allow loading libraries signed by other teams -->
-<key>com.apple.security.cs.disable-library-validation</key>
-<true/>
-
-<!-- Allow loading libraries with unsigned executable memory (needed for JIT/FFI) -->
+<!-- Allow loading libraries with unsigned executable memory (needed for Python CFFI) -->
 <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
 <true/>
 ```
+
+> **Do NOT add `disable-library-validation`** — it is macOS-only and has no effect on iOS.
 
 #### Step 4: Configure signing in Xcode
 
@@ -105,36 +136,79 @@ top-level `<dict>`:
 3. Product → Build (⌘B)
 4. Product → Run (⌘R) — this installs on the device
 
-#### Step 6: Sign the PyNaCl `.so` with your identity
+#### Step 6: Wrap the PyNaCl `.so` in a framework and sign it
+
+iOS requires the binary to be in a `.framework` bundle. Create the framework structure,
+sign it with **the same team identity**, and place it where a-Shell's Python can find it.
 
 ```sh
 # Extract the wheel
-mkdir -p /tmp/pynacl-sign && cd /tmp/pynacl-sign
-python3 -m zipfile -e /path/to/pynacl-1.6.2-cp313-cp313-ios_14_arm64_iphoneos.whl .
+WHL="pynacl-1.6.2-cp313-cp313-ios_14_arm64_iphoneos.whl"
+TMPDIR=$(mktemp -d)
+python3 -m zipfile -e "$WHL" "$TMPDIR/root"
+cd "$TMPDIR/root"
 
-# Remove any existing signature
-codesign --remove-signature nacl/_sodium.cpython-313-iphoneos.so
+# The .so file
+SO_FILE="nacl/_sodium.cpython-313-iphoneos.so"
 
-# Sign with your developer identity (use the exact identity name from Step 1)
-codesign -s "Apple Development: your@email.com (XXXXXXXXXX)" \
-    --force \
-    --timestamp=none \
-    nacl/_sodium.cpython-313-iphoneos.so
+# Create framework structure
+FRAMEWORK_NAME="nacl._sodium"
+FRAMEWORK_DIR="${FRAMEWORK_NAME}.framework"
+mkdir -p "$FRAMEWORK_DIR"
+
+# Copy the binary into the framework (must be MH_DYLIB, not MH_BUNDLE)
+cp "$SO_FILE" "$FRAMEWORK_DIR/$FRAMEWORK_NAME"
+
+# Create Info.plist (required for iOS framework)
+cat > "$FRAMEWORK_DIR/Info.plist" << 'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key>
+  <string>nacl._sodium</string>
+  <key>CFBundleIdentifier</key>
+  <string>com.vrlabs.nacl._sodium</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundlePackageType</key>
+  <string>FMWK</string>
+  <key>CFBundleVersion</key>
+  <string>1.0.0</string>
+  <key>MinimumOSVersion</key>
+  <string>14.0</string>
+</dict>
+</plist>
+EOF
+
+# Sign with your developer identity (same team as the custom a-Shell)
+SIGN_IDENTITY="Apple Development: your@email.com (XXXXXXXXXX)"
+codesign -s "$SIGN_IDENTITY" --force --timestamp=none \
+    "$FRAMEWORK_DIR/$FRAMEWORK_NAME"
 
 # Verify
-codesign -dvvv nacl/_sodium.cpython-313-iphoneos.so
-
-# Repackage (see build script for full RECORD update)
-# ... then copy wheel to iPad and pip install
+codesign -dvvv "$FRAMEWORK_DIR/$FRAMEWORK_NAME"
 ```
 
-#### Step 7: Install on iPad
+#### Step 7: Deploy the framework to the iPad
 
-Transfer the signed wheel to your iPad and install in a-Shell:
+Transfer the framework to the iPad and place it in a-Shell's Library directory. Then
+configure Python to find it.
+
+On the iPad in a-Shell:
 
 ```sh
-pip install --force-reinstall pynacl-1.6.2-cp313-cp313-ios_14_arm64_iphoneos.whl
+# Find a-Shell's Library directory
+SITE_PACKAGES=$(python3 -c "import site; print(site.getusersitepackages())")
+echo $SITE_PACKAGES
+
+# Copy the framework there (via AirDrop, iCloud, etc.)
+# Then configure Python's sys.path or use a .pth file
 ```
+
+Alternatively, add the framework to the a-Shell Xcode project as "Embed & Sign" and
+rebuild — this is the most reliable approach.
 
 ---
 
@@ -216,32 +290,50 @@ This is the simplest approach but requires a jailbreak, which most users don't h
 
 ## Summary
 
-| Approach | Works with stock a-Shell? | Requires jailbreak? | Requires Xcode? | Complexity |
-|----------|--------------------------|--------------------|-----------------|------------|
-| **A: Custom a-Shell** | No (use custom build) | No | Yes | Medium |
-| **B: Framework wrapping** | No (own app only) | No | Yes | High |
-| **C: Jailbreak + ldid** | Yes | Yes | No | Low |
+| Approach                  | Works with stock a-Shell? | Requires jailbreak? | Requires Xcode? | Key requirement                  |
+| ------------------------- | ------------------------- | ------------------- | --------------- | -------------------------------- |
+| **A: Custom a-Shell**     | No (use custom build)     | No                  | Yes             | Same Team ID for app + framework |
+| **B: Framework wrapping** | No (own app only)         | No                  | Yes             | Same Team ID for app + framework |
+| **C: Jailbreak + ldid**   | Yes                       | Yes                 | No              | Kernel enforcement disabled      |
 
 **Recommendation**: If you want to use PyNaCl in a-Shell on your iPad, **Option A**
-(building a custom a-Shell with `disable-library-validation`) is the most practical
-path. It gives you a fully functional terminal with native Python extension support,
-signed with your own VLABS identity.
+(building a custom a-Shell with your VLABS signing identity) is the most practical
+path. The critical insight is that **both the app and the framework must share the same
+Team ID** — this is an iOS kernel-level requirement with no opt-out.
 
 ---
 
-## Why Previous Attempts Failed
+## Key Apple Sources
 
-| Signing method | Signature type | iOS verdict | Reason |
-|---------------|---------------|-------------|--------|
-| None | Unsigned | "completely unsigned" | No LC_CODE_SIGNATURE at all |
-| `codesign -s -` | Adhoc (flags=0x2) | "code signature invalid" | Adhoc doesn't chain to Apple root |
-| `ldid -S` | Pseudo (flags=0x0) | "code signature invalid" | No Apple-trusted certificate chain |
-| Apple Dev cert | Valid CA-chained | ✅ passes signature check | Chains to Apple root CA |
-| Apple Dev cert (different team) | Valid but wrong team | ❌ "library validation" | Missing disable-library-validation |
+1. **Apple DTS (Quinn "The Eskimo")** — [Thread 670761](https://developer.apple.com/forums/thread/670761):
 
-The first three all fail at step 1 (signature validation). Even if we fix step 1 with
-a real developer cert, step 2 (library validation) blocks loading unless the app has
-the `disable-library-validation` entitlement.
+   > "iOS does not support 'naked' shared libraries (that is, .dylib files). If you want
+   > to create a shared library for iOS, you must package the code as a framework."
+
+2. **Apple DTS** — [Thread 670761](https://developer.apple.com/forums/thread/670761):
+
+   > "Last I checked iOS has no problem loading a framework dynamically using dlopen."
+
+3. **Apple Developer Documentation** — [Disable Library Validation Entitlement](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.security.cs.disable-library-validation):
+
+   > Platform: **macOS 10.7+** (not iOS)
+
+4. **Apple DTS** — [Thread 706437](https://developer.apple.com/forums/thread/706437):
+
+   > "Library validation is enabled by the Hardened Runtime but you may opt out of it
+   > using the Disable Library Validation Entitlement." (macOS only — Hardened Runtime
+   > does not exist on iOS)
+
+5. **Python 3.14 Documentation** — [Using Python on iOS](https://docs.python.org/3/using/ios.html):
+
+   > "The iOS App Store requires that all binary modules in an iOS app must be dynamic
+   > libraries, contained in a framework with appropriate metadata, stored in the
+   > Frameworks folder of the packaged app."
+
+6. **Successful user report** — [Thread 670761](https://developer.apple.com/forums/thread/670761):
+   > "I signed it with the same bundle identifier as the application, created a framework
+   > for it... I then load the dylib directly from C++ code using dlopen... I can then
+   > obtain a pointer to the simple function and execute it successfully."
 
 ---
 
@@ -254,19 +346,26 @@ Once you have your signing identity installed on the build Mac:
 SIGN_IDENTITY=$(security find-identity -v -p codesigning | grep "VLABS" | head -1 | sed 's/.*"\(.*\)"/\1/')
 echo "Using identity: $SIGN_IDENTITY"
 
-# 2. Extract, strip, sign, repackage
+# 2. Extract, wrap in framework, sign
 WHL="/path/to/pynacl-1.6.2-cp313-cp313-ios_14_arm64_iphoneos.whl"
 TMPDIR=$(mktemp -d)
 python3 -m zipfile -e "$WHL" "$TMPDIR/root"
 cd "$TMPDIR/root"
 
-codesign --remove-signature nacl/_sodium.cpython-313-iphoneos.so
-codesign -s "$SIGN_IDENTITY" --force --timestamp=none nacl/_sodium.cpython-313-iphoneos.so
-codesign -v nacl/_sodium.cpython-313-iphoneos.so
+# Create framework
+FRAMEWORK_NAME="nacl._sodium"
+mkdir -p "${FRAMEWORK_NAME}.framework"
+cp nacl/_sodium.cpython-313-iphoneos.so "${FRAMEWORK_NAME}.framework/${FRAMEWORK_NAME}"
 
-# 3. Update RECORD and repackage (use the build script's repackaging logic)
-# ... then install on device
+# Add Info.plist (see full instructions above for content)
+# ...
+
+# Sign with same identity as the custom a-Shell
+codesign -s "$SIGN_IDENTITY" --force --timestamp=none \
+    "${FRAMEWORK_NAME}.framework/${FRAMEWORK_NAME}"
+
+# Verify
+codesign -v "${FRAMEWORK_NAME}.framework/${FRAMEWORK_NAME}"
 ```
 
-This wheel will only load in an app signed by the **same team** (VLABS) or in an app
-with `disable-library-validation` entitlement.
+This framework will load in a custom a-Shell signed with the same VLABS identity.

@@ -206,7 +206,7 @@ iOS enforces mandatory code signature validation on all `dlopen()`'d libraries. 
 
 **Solutions** (see `IOS_CODESIGN_GUIDE.md` for full details):
 
-1. **Sign with your Apple Developer identity** — requires building a custom a-Shell with `disable-library-validation` entitlement, or using your own iOS app that embeds Python
+1. **Sign with your Apple Developer identity** — requires building a custom a-Shell signed with your team identity (so both app and framework share the same Team ID), or using your own iOS app that embeds Python
 2. **Jailbroken device** — `ldid -S` pseudo-signatures work when kernel enforcement is disabled
 3. **Use pure-Python fallback** — avoid native extensions entirely (not possible for PyNaCl)
 
