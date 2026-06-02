@@ -1,0 +1,34 @@
+# Build artifacts
+build/libsodium/
+pynacl-1.6.2/build/
+pynacl-1.6.2/dist/
+pynacl-1.6.2/*.egg-info/
+pynacl-1.6.2/src/nacl/_sodium*.so
+
+# Virtual environments
+ios-venv/
+venv/
+.venv/
+
+# macOS
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg
+
+# Downloaded source archives (re-download from upstream)
+libsodium-*.tar.gz
+pynacl-*.tar.gz
